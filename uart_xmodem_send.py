@@ -97,10 +97,24 @@ def transfer(args):
             time.sleep(0.3)
             port.reset_input_buffer()
             print(f"Sending {size} bytes via {args.port} to {args.remote_path}", flush=True)
-            port.write(f'XMODEM RECEIVE "{args.remote_path}"\r\n'.encode("ascii"))
-            port.flush()
+            # Written in chunks a receiver's FIFO can hold. The RP2040's is 32
+            # bytes and this command is longer than that, so a receiver busy
+            # with a slow frame loses the tail of it and never answers. Pacing
+            # the write gives it a chance to drain between chunks.
+            command = f'XMODEM RECEIVE "{args.remote_path}"\r\n'.encode("ascii")
+            for i in range(0, len(command), 16):
+                port.write(command[i:i + 16])
+                port.flush()
+                time.sleep(0.02)
             try:
                 primed = bytearray(wait_handshake(port, args.handshake_timeout))
+                # A receiver repeats its handshake NAK until data arrives, so
+                # any byte buffered now is a surplus one from that wait. Left
+                # in place it is read as the reply to block 1, and the sender
+                # resends against a receiver that has already moved on until
+                # one side gives up. Nothing else can be in flight here: the
+                # receiver sends nothing but NAKs until we transmit a block.
+                port.reset_input_buffer()
                 print(f"Handshake: {bytes(primed)!r}; transfer started", flush=True)
 
                 def getc(size, timeout=10):
